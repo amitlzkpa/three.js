@@ -10,6 +10,7 @@ import {
 	ClampToEdgeWrapping,
 	DoubleSide,
 	InterpolateDiscrete,
+	InterpolateLinear,
 	LinearFilter,
 	LinearMipMapLinearFilter,
 	LinearMipMapNearestFilter,
@@ -146,9 +147,23 @@ GLTFExporter.prototype = {
 
 		var cachedCanvas;
 
+		var uids = new Map();
+		var uid = 0;
+
 		/**
-		 * Compare two arrays
+		 * Assign and return a temporal unique id for an object
+		 * especially which doesn't have .uuid
+		 * @param  {Object} object
+		 * @return {Integer}
 		 */
+		function getUID( object ) {
+
+			if ( ! uids.has( object ) ) uids.set( object, uid ++ );
+
+			return uids.get( object );
+
+		}
+
 		/**
 		 * Compare two arrays
 		 * @param  {Array} array1 Array 1 to compare
@@ -1185,12 +1200,25 @@ GLTFExporter.prototype = {
 			var modifiedAttribute = null;
 			for ( var attributeName in geometry.attributes ) {
 
+				// Ignore morph target attributes, which are exported later.
+				if ( attributeName.substr( 0, 5 ) === 'morph' ) continue;
+
 				var attribute = geometry.attributes[ attributeName ];
 				attributeName = nameConversion[ attributeName ] || attributeName.toUpperCase();
 
-				if ( cachedData.attributes.has( attribute ) ) {
+				// Prefix all geometry attributes except the ones specifically
+				// listed in the spec; non-spec attributes are considered custom.
+				var validVertexAttributes =
+						/^(POSITION|NORMAL|TANGENT|TEXCOORD_\d+|COLOR_\d+|JOINTS_\d+|WEIGHTS_\d+)$/;
+				if ( ! validVertexAttributes.test( attributeName ) ) {
 
-					attributes[ attributeName ] = cachedData.attributes.get( attribute );
+					attributeName = '_' + attributeName;
+
+				}
+
+				if ( cachedData.attributes.has( getUID( attribute ) ) ) {
+
+					attributes[ attributeName ] = cachedData.attributes.get( getUID( attribute ) );
 					continue;
 
 				}
@@ -1207,15 +1235,11 @@ GLTFExporter.prototype = {
 
 				}
 
-				if ( attributeName.substr( 0, 5 ) !== 'MORPH' ) {
+				var accessor = processAccessor( modifiedAttribute || attribute, geometry );
+				if ( accessor !== null ) {
 
-					var accessor = processAccessor( modifiedAttribute || attribute, geometry );
-					if ( accessor !== null ) {
-
-						attributes[ attributeName ] = accessor;
-						cachedData.attributes.set( attribute, accessor );
-
-					}
+					attributes[ attributeName ] = accessor;
+					cachedData.attributes.set( getUID( attribute ), accessor );
 
 				}
 
@@ -1281,9 +1305,9 @@ GLTFExporter.prototype = {
 
 						var baseAttribute = geometry.attributes[ attributeName ];
 
-						if ( cachedData.attributes.has( attribute ) ) {
+						if ( cachedData.attributes.has( getUID( attribute ) ) ) {
 
-							target[ gltfAttributeName ] = cachedData.attributes.get( attribute );
+							target[ gltfAttributeName ] = cachedData.attributes.get( getUID( attribute ) );
 							continue;
 
 						}
@@ -1303,7 +1327,7 @@ GLTFExporter.prototype = {
 						}
 
 						target[ gltfAttributeName ] = processAccessor( relativeAttribute, geometry );
-						cachedData.attributes.set( baseAttribute, target[ gltfAttributeName ] );
+						cachedData.attributes.set( getUID( baseAttribute ), target[ gltfAttributeName ] );
 
 					}
 
@@ -1372,16 +1396,26 @@ GLTFExporter.prototype = {
 
 				if ( geometry.index !== null ) {
 
-					if ( cachedData.attributes.has( geometry.index ) ) {
+					var cacheKey = getUID( geometry.index );
 
-						primitive.indices = cachedData.attributes.get( geometry.index );
+					if ( groups[ i ].start !== undefined || groups[ i ].count !== undefined ) {
+
+						cacheKey += ':' + groups[ i ].start + ':' + groups[ i ].count;
+
+					}
+
+					if ( cachedData.attributes.has( cacheKey ) ) {
+
+						primitive.indices = cachedData.attributes.get( cacheKey );
 
 					} else {
 
 						primitive.indices = processAccessor( geometry.index, geometry, groups[ i ].start, groups[ i ].count );
-						cachedData.attributes.set( geometry.index, primitive.indices );
+						cachedData.attributes.set( cacheKey, primitive.indices );
 
 					}
+
+					if ( primitive.indices === null ) delete primitive.indices;
 
 				}
 
@@ -1730,7 +1764,12 @@ GLTFExporter.prototype = {
 
 			} else {
 
-				object.updateMatrix();
+				if ( object.matrixAutoUpdate ) {
+
+					object.updateMatrix();
+
+				}
+
 				if ( ! equalArray( object.matrix.elements, [ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 ] ) ) {
 
 					gltfNode.matrix = object.matrix.elements;
@@ -1777,7 +1816,7 @@ GLTFExporter.prototype = {
 
 			} else if ( object.isLight ) {
 
-				console.warn( 'THREE.GLTFExporter: Only directional, point, and spot lights are supported.' );
+				console.warn( 'THREE.GLTFExporter: Only directional, point, and spot lights are supported.', object );
 				return null;
 
 			}
